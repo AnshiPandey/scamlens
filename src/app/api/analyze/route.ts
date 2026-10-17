@@ -28,7 +28,27 @@ export async function POST(request: Request) {
     }
 
     // Step 1: Call the real MCP server.
-    const mcpFindings = await investigateWithMCP(message.trim());
+    let mcpFindings:
+  | Awaited<ReturnType<typeof investigateWithMCP>>
+  | {
+      toolsCalled: string[];
+      unavailable: true;
+      error: string;
+    };
+
+try {
+  mcpFindings = await investigateWithMCP(message.trim());
+} catch (mcpError) {
+  console.error("MCP investigation failed:", mcpError);
+
+  mcpFindings = {
+    toolsCalled: [],
+    unavailable: true,
+    error:
+      "The MCP server could not be reached. " +
+      "No MCP findings are available for this investigation.",
+  };
+}
 
     // Step 2: Generate an explanation using Gemini.
     const ai = new GoogleGenAI({ apiKey });

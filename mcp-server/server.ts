@@ -11,13 +11,81 @@ app.use(express.json({ limit: "100kb" }));
 
 const transports: Record<string, StreamableHTTPServerTransport> = {};
 
+// Reusable heuristic patterns
+const urgencyPattern =
+  /\b(urgent|immediately|act now|final warning|within \d+\s+hours?)\b/i;
+
+const authenticationPattern =
+  /\b(password|OTP|one[- ]time password|verification code|PIN)\b/i;
+
+const prizePattern =
+  /\b(prize|lottery|you have won|claim your reward|voucher|lucky draw)\b/i;
+
+const accountPattern =
+  /\b(click here|verify your account|account.{0,30}blocked)\b/i;
+
+const paymentPattern =
+  /\b(send money|transfer funds|pay immediately|gift card|money transfer)\b/i;
+
+const advanceFeePattern =
+  /\b(processing fee|claim fee|advance fee|upfront fee|pay to claim|pay to receive)\b/i;
+
+function extractIndicators(message: string): string[] {
+  const indicators: string[] = [];
+
+  if (urgencyPattern.test(message)) {
+    indicators.push("Urgency or pressure language");
+  }
+
+  if (authenticationPattern.test(message)) {
+    indicators.push("Sensitive authentication information mentioned");
+  }
+
+  if (prizePattern.test(message)) {
+    indicators.push("Prize or reward claim");
+  }
+
+  if (accountPattern.test(message)) {
+    indicators.push("Account verification or link-click pressure");
+  }
+
+  if (paymentPattern.test(message)) {
+    indicators.push("Payment or money-transfer pressure");
+  }
+
+  if (advanceFeePattern.test(message)) {
+    indicators.push("Possible advance-fee requirement");
+  }
+
+  return indicators;
+}
+
+function extractUrls(message: string): string[] {
+  const matches = message.match(/https?:\/\/[^\s<>"')\]]+/gi) ?? [];
+
+  return [
+    ...new Set(
+      matches.map((url) => url.replace(/[),.!?;]+$/, ""))
+    ),
+  ];
+}
+
+function extractPhoneNumbers(message: string): string[] {
+  const matches =
+    message.match(/(?:\+?\d[\d\s().-]{7,}\d)/g) ?? [];
+
+  return [
+    ...new Set(matches.map((phone) => phone.trim())),
+  ];
+}
+
 function createMcpServer() {
   const server = new McpServer({
     name: "scamlens-mcp-server",
     version: "1.0.0",
   });
 
-  // TOOL 1: Extract suspicious indicators from a message.
+  // TOOL 1: Extract URLs, phone numbers, and heuristic warning signs.
   server.registerTool(
     "extract_indicators",
     {
@@ -29,41 +97,9 @@ function createMcpServer() {
       },
     },
     async ({ message }) => {
-      const urls = [
-        ...new Set(
-          (message.match(/https?:\/\/[^\s<>"']+/gi) ?? []).map((url) =>
-            url.replace(/[),.!?;]+$/, "")
-          )
-        ),
-      ];
-
-      const phoneNumbers = [
-        ...new Set(
-          message.match(/(?:\+?\d[\d\s().-]{7,}\d)/g) ?? []
-        ),
-      ].map((phone) => phone.trim());
-
-      const indicators: string[] = [];
-
-      if (/urgent|immediately|act now|final warning|within \d+ hours/i.test(message)) {
-        indicators.push("Urgency or pressure language");
-      }
-
-      if (/password|OTP|one.time.password|verification code|PIN/i.test(message)) {
-        indicators.push("Sensitive authentication information mentioned");
-      }
-
-      if (/prize|lottery|you have won|claim your reward/i.test(message)) {
-        indicators.push("Prize or reward claim");
-      }
-
-      if (/click here|verify your account|account.{0,30}blocked/i.test(message)) {
-        indicators.push("Account verification or link-click pressure");
-      }
-
-      if (/send money|transfer funds|pay immediately|gift card/i.test(message)) {
-        indicators.push("Payment or money-transfer pressure");
-      }
+      const urls = extractUrls(message);
+      const phoneNumbers = extractPhoneNumbers(message);
+      const indicators = extractIndicators(message);
 
       return {
         content: [
@@ -74,7 +110,8 @@ function createMcpServer() {
                 urls,
                 phoneNumbers,
                 indicators,
-                note: "These are extracted signals and heuristics, not proof of fraud.",
+                note:
+                  "These are extracted signals and heuristics, not proof of fraud.",
               },
               null,
               2
@@ -85,7 +122,7 @@ function createMcpServer() {
     }
   );
 
-  // TOOL 2: Inspect a URL without visiting it.
+  // TOOL 2: Inspect URL structure without visiting the destination.
   server.registerTool(
     "check_url_safely",
     {
@@ -103,7 +140,10 @@ function createMcpServer() {
         const parsed = new URL(url);
 
         const findings: string[] = [];
-        const hostname = parsed.hostname.toLowerCase();
+        const hostname = parsed.hostname
+          .toLowerCase()
+          .replace(/^\[|\]$/g, "");
+
         const ipVersion = isIP(hostname);
 
         const privateOrLocal =
@@ -118,9 +158,8 @@ function createMcpServer() {
           /^169\.254\./.test(hostname) ||
           /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
           (ipVersion === 6 &&
-            (hostname.startsWith("fc") ||
-              hostname.startsWith("fd") ||
-              hostname.startsWith("fe80:")));
+            (/^(fc|fd)/i.test(hostname) ||
+              /^fe80:/i.test(hostname)));
 
         if (!["http:", "https:"].includes(parsed.protocol)) {
           findings.push("URL uses a non-HTTP(S) protocol");
@@ -131,19 +170,34 @@ function createMcpServer() {
         }
 
         if (parsed.username || parsed.password) {
-          findings.push("URL contains embedded username or password fields");
+          findings.push(
+            "URL contains embedded username or password fields"
+          );
         }
 
-        if (hostname.startsWith("xn--") || hostname.includes(".xn--")) {
-          findings.push("Hostname contains an internationalized domain label");
+        if (
+          hostname.startsWith("xn--") ||
+          hostname.includes(".xn--")
+        ) {
+          findings.push(
+            "Hostname contains an internationalized domain label"
+          );
         }
 
-        if (hostname.split(".").some((label) => label.length > 0 && label.length > 40)) {
-          findings.push("Hostname contains an unusually long label");
+        if (
+          hostname
+            .split(".")
+            .some((label) => label.length > 40)
+        ) {
+          findings.push(
+            "Hostname contains an unusually long label"
+          );
         }
 
-        if (hostname.match(/\d+\.\d+\.\d+\.\d+/)) {
-          findings.push("URL uses an IPv4 address instead of a domain name");
+        if (ipVersion === 4) {
+          findings.push(
+            "URL uses an IPv4 address instead of a domain name"
+          );
         }
 
         const shorteners = [
@@ -156,11 +210,15 @@ function createMcpServer() {
         ];
 
         if (shorteners.includes(hostname)) {
-          findings.push("URL uses a known link-shortening domain");
+          findings.push(
+            "URL uses a known link-shortening domain"
+          );
         }
 
         if (privateOrLocal) {
-          findings.push("URL points to a local or private network address");
+          findings.push(
+            "URL points to a local or private network address"
+          );
         }
 
         result = {
@@ -177,10 +235,13 @@ function createMcpServer() {
       } catch {
         result = {
           validUrl: false,
-          findings: ["Input could not be parsed as an absolute URL"],
+          findings: [
+            "Input could not be parsed as an absolute URL",
+          ],
           reputationStatus: "not_checked",
           networkRequestMade: false,
-          note: "Provide a complete URL, including its protocol, for structural inspection.",
+          note:
+            "Provide a complete URL, including its protocol, for structural inspection.",
         };
       }
 
@@ -195,7 +256,7 @@ function createMcpServer() {
     }
   );
 
-  // Keep the original tool for backward compatibility.
+  // TOOL 3: Assess message warning signs using deterministic heuristics.
   server.registerTool(
     "check_message",
     {
@@ -207,23 +268,7 @@ function createMcpServer() {
       },
     },
     async ({ message }) => {
-      const indicators: string[] = [];
-
-      if (/urgent|immediately|act now|final warning/i.test(message)) {
-        indicators.push("Urgency or pressure language");
-      }
-
-      if (/password|otp|one.time.password|verification code/i.test(message)) {
-        indicators.push("Sensitive authentication information mentioned");
-      }
-
-      if (/prize|lottery|you have won|claim your reward/i.test(message)) {
-        indicators.push("Prize or reward claim");
-      }
-
-      if (/click here|verify your account|account.{0,20}blocked/i.test(message)) {
-        indicators.push("Account verification or link-click pressure");
-      }
+      const indicators = extractIndicators(message);
 
       return {
         content: [
@@ -253,6 +298,7 @@ function createMcpServer() {
   return server;
 }
 
+// Basic server status endpoint.
 app.get("/", (_req, res) => {
   res.json({
     name: "ScamLens MCP Server",
@@ -261,9 +307,15 @@ app.get("/", (_req, res) => {
   });
 });
 
+// Initialize MCP sessions and handle requests.
 app.post("/mcp", async (req, res) => {
-  const sessionId = req.headers["mcp-session-id"] as string | undefined;
-  let transport = sessionId ? transports[sessionId] : undefined;
+  const sessionId = req.headers["mcp-session-id"] as
+    | string
+    | undefined;
+
+  let transport = sessionId
+    ? transports[sessionId]
+    : undefined;
 
   if (!transport && isInitializeRequest(req.body)) {
     const newTransport = new StreamableHTTPServerTransport({
@@ -281,38 +333,68 @@ app.post("/mcp", async (req, res) => {
 
     const server = createMcpServer();
     await server.connect(newTransport);
+
     transport = newTransport;
   }
 
   if (!transport) {
     res.status(400).json({
-      error: "No valid MCP session. Initialize the MCP connection first.",
+      error:
+        "No valid MCP session. Initialize the MCP connection first.",
     });
     return;
   }
 
-  await transport.handleRequest(req, res, req.body);
+  try {
+    await transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error("MCP request failed:", error);
+
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: "Internal MCP server error",
+      });
+    }
+  }
 });
 
+// This server does not offer an SSE stream through GET /mcp.
 app.get("/mcp", (_req, res) => {
-  res.status(405).set("Allow", "POST").send("Method Not Allowed");
+  res
+    .status(405)
+    .set("Allow", "POST, DELETE")
+    .send("Method Not Allowed");
 });
 
+// Close an existing MCP session.
 app.delete("/mcp", async (req, res) => {
-  const sessionId = req.headers["mcp-session-id"] as string | undefined;
-  const transport = sessionId ? transports[sessionId] : undefined;
+  const sessionId = req.headers["mcp-session-id"] as
+    | string
+    | undefined;
+
+  const transport = sessionId
+    ? transports[sessionId]
+    : undefined;
 
   if (!transport) {
     res.status(404).send("Unknown MCP session");
     return;
   }
 
-  await transport.close();
-  res.status(200).send("Session closed");
+  try {
+    await transport.close();
+    res.status(200).send("Session closed");
+  } catch (error) {
+    console.error("Failed to close MCP session:", error);
+    res.status(500).send("Could not close MCP session");
+  }
 });
 
 const port = Number(process.env.MCP_PORT ?? 3001);
 
+// Local-only binding for development.
 app.listen(port, "127.0.0.1", () => {
-  console.log(`ScamLens MCP server listening on http://127.0.0.1:${port}/mcp`);
+  console.log(
+    `ScamLens MCP server listening on http://127.0.0.1:${port}/mcp`
+  );
 });
