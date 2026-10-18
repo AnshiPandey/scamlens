@@ -390,11 +390,8 @@ app.delete("/mcp", async (req, res) => {
   }
 });
 
-const port = Number(process.env.MCP_PORT ?? 3001);
+const port = Number(process.env.PORT ?? process.env.MCP_PORT ?? 3001);
 
-// Local-only binding for development.
-app.listen(port, "127.0.0.1", () => {
-  console.log(
-    `ScamLens MCP server listening on http://127.0.0.1:${port}/mcp`
-  );
+app.listen(port, "0.0.0.0", () => {
+  console.log(`ScamLens MCP server listening on port ${port}`);
 });
