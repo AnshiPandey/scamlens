@@ -11,29 +11,32 @@ app.use(express.json({ limit: "100kb" }));
 
 const transports: Record<string, StreamableHTTPServerTransport> = {};
 
-// Reusable heuristic patterns
+// These patterns identify possible warning signs; they do not prove fraud.
 const urgencyPattern =
-  /\b(urgent|immediately|act now|final warning|within \d+\s+hours?)\b/i;
+  /\b(urgent|urgently|immediately|act\s+now|act\s+immediately|final\s+warning|last\s+chance|within\s+\d+\s*(?:hours?|hrs?|minutes?|mins?|seconds?|days?)|in\s+\d+\s*(?:hours?|hrs?|minutes?|mins?|seconds?|days?)|expires?\s+in\s+\d+|deadline|limited\s+time|today\s+only|before\s+your\s+account)\b/i;
+
+const shortDeadlinePattern =
+  /\b\d+\s*[- ]?\s*(?:minute|min|second|sec)\s*(?:deadline|left|remaining|to\s+claim|to\s+respond)?\b|\b(?:claim|respond|verify|pay|act)\s+(?:within|in)\s+\d+\s*(?:hours?|hrs?|minutes?|mins?|seconds?|secs?)\b/i;
 
 const authenticationPattern =
-  /\b(password|OTP|one[- ]time password|verification code|PIN)\b/i;
+  /\b(password|passcode|OTP|one[- ]time password|verification code|PIN|CVV|security code)\b/i;
 
 const prizePattern =
-  /\b(prize|lottery|you have won|claim your reward|voucher|lucky draw)\b/i;
+  /\b(prize|lottery|you have won|you['’]?ve won|winner|winning|claim your reward|reward|voucher|lucky draw|cash prize|won ₹?[\d,]+)\b/i;
 
 const accountPattern =
-  /\b(click here|verify your account|account.{0,30}blocked)\b/i;
+  /\b(click here|click the link|verify your account|account.{0,30}blocked|account.{0,30}suspend|KYC|know your customer|bank.{0,30}verification)\b/i;
 
 const paymentPattern =
-  /\b(send money|transfer funds|pay immediately|gift card|money transfer)\b/i;
+  /\b(send money|transfer funds|pay immediately|gift card|money transfer|wire transfer|make a payment)\b/i;
 
 const advanceFeePattern =
-  /\b(processing fee|claim fee|advance fee|upfront fee|pay to claim|pay to receive)\b/i;
+  /\b(processing fee|claim fee|advance fee|upfront fee|pay to claim|pay to receive|pay.{0,30}(?:release|unlock|receive|claim)|fee.{0,30}(?:prize|reward|winnings)|pay ₹?\s?[\d,]+)\b/i;
 
 function extractIndicators(message: string): string[] {
   const indicators: string[] = [];
 
-  if (urgencyPattern.test(message)) {
+  if (urgencyPattern.test(message) || shortDeadlinePattern.test(message)) {
     indicators.push("Urgency or pressure language");
   }
 
@@ -64,19 +67,13 @@ function extractUrls(message: string): string[] {
   const matches = message.match(/https?:\/\/[^\s<>"')\]]+/gi) ?? [];
 
   return [
-    ...new Set(
-      matches.map((url) => url.replace(/[),.!?;]+$/, ""))
-    ),
+    ...new Set(matches.map((url) => url.replace(/[),.!?;:]+$/, ""))),
   ];
 }
 
 function extractPhoneNumbers(message: string): string[] {
-  const matches =
-    message.match(/(?:\+?\d[\d\s().-]{7,}\d)/g) ?? [];
-
-  return [
-    ...new Set(matches.map((phone) => phone.trim())),
-  ];
+  const matches = message.match(/(?:\+\s?)?\d[\d\s().-]{7,}\d/g) ?? [];
+  return [...new Set(matches.map((phone) => phone.trim()))];
 }
 
 function createMcpServer() {
@@ -135,15 +132,10 @@ function createMcpServer() {
     },
     async ({ url }) => {
       let result: Record<string, unknown>;
-
-      try {
+ try {
         const parsed = new URL(url);
-
         const findings: string[] = [];
-        const hostname = parsed.hostname
-          .toLowerCase()
-          .replace(/^\[|\]$/g, "");
-
+        const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
         const ipVersion = isIP(hostname);
 
         const privateOrLocal =
@@ -158,8 +150,7 @@ function createMcpServer() {
           /^169\.254\./.test(hostname) ||
           /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
           (ipVersion === 6 &&
-            (/^(fc|fd)/i.test(hostname) ||
-              /^fe80:/i.test(hostname)));
+            (/^(fc|fd)/i.test(hostname) || /^fe80:/i.test(hostname)));
 
         if (!["http:", "https:"].includes(parsed.protocol)) {
           findings.push("URL uses a non-HTTP(S) protocol");
@@ -170,34 +161,19 @@ function createMcpServer() {
         }
 
         if (parsed.username || parsed.password) {
-          findings.push(
-            "URL contains embedded username or password fields"
-          );
+          findings.push("URL contains embedded username or password fields");
         }
 
-        if (
-          hostname.startsWith("xn--") ||
-          hostname.includes(".xn--")
-        ) {
-          findings.push(
-            "Hostname contains an internationalized domain label"
-          );
+        if (hostname.startsWith("xn--") || hostname.includes(".xn--")) {
+          findings.push("Hostname contains an internationalized domain label");
         }
 
-        if (
-          hostname
-            .split(".")
-            .some((label) => label.length > 40)
-        ) {
-          findings.push(
-            "Hostname contains an unusually long label"
-          );
+        if (hostname.split(".").some((label) => label.length > 40)) {
+          findings.push("Hostname contains an unusually long label");
         }
 
         if (ipVersion === 4) {
-          findings.push(
-            "URL uses an IPv4 address instead of a domain name"
-          );
+          findings.push("URL uses an IPv4 address instead of a domain name");
         }
 
         const shorteners = [
@@ -209,15 +185,31 @@ function createMcpServer() {
           "rb.gy",
         ];
 
-        if (shorteners.includes(hostname)) {
-          findings.push(
-            "URL uses a known link-shortening domain"
-          );
+            if (shorteners.includes(hostname)) {
+          findings.push("URL uses a known link-shortening domain");
         }
 
         if (privateOrLocal) {
+          findings.push("URL points to a local or private network address");
+        }
+
+        const isReservedExampleDomain =
+          hostname === "example.com" ||
+          hostname.endsWith(".example.com") ||
+          hostname === "example.org" ||
+          hostname.endsWith(".example.org") ||
+          hostname === "example.net" ||
+          hostname.endsWith(".example.net");
+
+        if (isReservedExampleDomain) {
           findings.push(
-            "URL points to a local or private network address"
+            "Hostname uses a reserved example domain commonly used for documentation and testing; this does not establish that a real phishing site exists"
+          );
+        }
+
+        if (/\b(sbi|kyc|verify|verification|bank|account)\b/i.test(hostname)) {
+          findings.push(
+            "Hostname contains banking or verification-related keywords; this is a structural heuristic, not proof of impersonation"
           );
         }
 
@@ -235,9 +227,7 @@ function createMcpServer() {
       } catch {
         result = {
           validUrl: false,
-          findings: [
-            "Input could not be parsed as an absolute URL",
-          ],
+          findings: ["Input could not be parsed as an absolute URL"],
           reputationStatus: "not_checked",
           networkRequestMade: false,
           note:
@@ -256,7 +246,7 @@ function createMcpServer() {
     }
   );
 
-  // TOOL 3: Assess message warning signs using deterministic heuristics.
+   // TOOL 3: Assess message warning signs using deterministic heuristics.
   server.registerTool(
     "check_message",
     {
@@ -309,13 +299,8 @@ app.get("/", (_req, res) => {
 
 // Initialize MCP sessions and handle requests.
 app.post("/mcp", async (req, res) => {
-  const sessionId = req.headers["mcp-session-id"] as
-    | string
-    | undefined;
-
-  let transport = sessionId
-    ? transports[sessionId]
-    : undefined;
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  let transport = sessionId ? transports[sessionId] : undefined;
 
   if (!transport && isInitializeRequest(req.body)) {
     const newTransport = new StreamableHTTPServerTransport({
@@ -333,14 +318,12 @@ app.post("/mcp", async (req, res) => {
 
     const server = createMcpServer();
     await server.connect(newTransport);
-
     transport = newTransport;
   }
 
   if (!transport) {
     res.status(400).json({
-      error:
-        "No valid MCP session. Initialize the MCP connection first.",
+      error: "No valid MCP session. Initialize the MCP connection first.",
     });
     return;
   }
@@ -351,30 +334,20 @@ app.post("/mcp", async (req, res) => {
     console.error("MCP request failed:", error);
 
     if (!res.headersSent) {
-      res.status(500).json({
-        error: "Internal MCP server error",
-      });
+      res.status(500).json({ error: "Internal MCP server error" });
     }
   }
 });
 
 // This server does not offer an SSE stream through GET /mcp.
 app.get("/mcp", (_req, res) => {
-  res
-    .status(405)
-    .set("Allow", "POST, DELETE")
-    .send("Method Not Allowed");
+  res.status(405).set("Allow", "POST, DELETE").send("Method Not Allowed");
 });
 
 // Close an existing MCP session.
 app.delete("/mcp", async (req, res) => {
-  const sessionId = req.headers["mcp-session-id"] as
-    | string
-    | undefined;
-
-  const transport = sessionId
-    ? transports[sessionId]
-    : undefined;
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  const transport = sessionId ? transports[sessionId] : undefined;
 
   if (!transport) {
     res.status(404).send("Unknown MCP session");

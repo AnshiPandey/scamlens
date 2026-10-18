@@ -75,7 +75,7 @@ function parseToolData(value: unknown): Record<string, unknown> | null {
   } catch {
     // Keep the original result available in the expandable panel.
   }
-
+  
   return null;
 }
 
@@ -131,6 +131,39 @@ function EvidenceSummary({ findings }: { findings: MCPFindings }) {
     return getStrings(data?.findings).map(
       (finding) => `${check.url}: ${finding}`
     );
+  });
+
+  // Add transparent, local-only context for URLs already extracted by MCP.
+  // These checks do not contact the destination or verify its reputation.
+  const localUrlContext = urls.flatMap((url) => {
+    try {
+      const parsed = new URL(url);
+      const hostname = parsed.hostname.toLowerCase();
+      const findingsForUrl: string[] = [];
+
+      if (parsed.protocol === "http:") {
+        findingsForUrl.push(`${url}: Uses HTTP rather than HTTPS; the connection is not encrypted in transit.`);
+      }
+
+      if (
+        hostname === "example.com" ||
+        hostname.endsWith(".example.com") ||
+        hostname === "example.org" ||
+        hostname.endsWith(".example.org") ||
+        hostname === "example.net" ||
+        hostname.endsWith(".example.net")
+      ) {
+        findingsForUrl.push(`${url}: Uses a reserved example domain commonly used in documentation and testing; this does not establish that a real phishing site exists.`);
+      }
+
+      if (/sbi|kyc|verify|verification|bank|account/i.test(hostname)) {
+        findingsForUrl.push(`${url}: Hostname contains banking or verification-related keywords. This is only a structural heuristic and does not prove impersonation.`);
+      }
+
+      return findingsForUrl;
+    } catch {
+      return [];
+    }
   });
 
   const reputationNotChecked = (findings.urlChecks ?? []).some((check) => {
@@ -193,7 +226,7 @@ function EvidenceSummary({ findings }: { findings: MCPFindings }) {
     );
   }
 
-  const sections = [
+    const sections = [
     {
       title: "Observed facts",
       description: "Items extracted directly from the submitted message.",
@@ -208,7 +241,7 @@ function EvidenceSummary({ findings }: { findings: MCPFindings }) {
     {
       title: "Warning signs",
       description: "Heuristic signals that deserve closer review.",
-      items: [...new Set([...indicators, ...urlFindings])],
+      items: [...new Set([...indicators, ...urlFindings, ...localUrlContext])],
       empty: "No warning signs were returned by the available checks.",
       color: "border-amber-500/30 bg-amber-500/5",
       headingColor: "text-amber-300",
@@ -223,6 +256,7 @@ function EvidenceSummary({ findings }: { findings: MCPFindings }) {
         ...(networkNotUsed
           ? ["The destination website was not opened; no network request was made."]
           : []),
+        "Hostname keyword checks are structural heuristics, not proof of impersonation.",
         "These heuristic findings do not prove that a message is fraudulent or safe.",
       ],
       empty: "Review the individual tool results for additional limitations.",
@@ -546,8 +580,7 @@ export default function Home() {
             </div>
           </aside>
         </section>
-
-        {(analysis || mcpFindings) && (
+       {(analysis || mcpFindings) && (
           <section
             aria-live="polite"
             className="mt-8 space-y-6"
