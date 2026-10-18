@@ -6,6 +6,10 @@
 
 ScamLens helps users investigate suspicious SMS messages, emails, and URLs using AI-powered explanations and deterministic Model Context Protocol (MCP) tools. It identifies potential warning signs, explains the evidence, highlights unknowns, and recommends safer next steps.
 
+## 🚀 Live Demo
+
+Try ScamLens: https://scamlens-ochre.vercel.app/
+
 ## ✨ Features
 
 - **AI Investigation:** Generates structured reports explaining suspicious claims, potential risks, and recommended actions using Google Gemini.
